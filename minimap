@@ -1,0 +1,148 @@
+using UnityEngine;
+using UnityEngine.UI;
+using BepInEx;
+using System.Collections.Generic;
+using RoR2;
+
+public class MinimapMod : MonoBehaviour
+{
+    public Camera minimapCamera;  // Reference to the top-down camera.
+    private RenderTexture minimapRenderTexture;
+    private RawImage minimapImage;
+    private RectTransform minimapRect;
+
+    private const float MapSize = 150f; // Minimap size (in pixels).
+
+    void Start()
+    {
+        // Step 1: Set up the Minimap Canvas and Image.
+        CreateMinimapUI();
+
+        // Step 2: Configure the Camera to render the minimap.
+        SetupMinimapCamera();
+    }
+
+    private void CreateMinimapUI()
+    {
+        // Create a UI Canvas for the minimap.
+        GameObject minimapCanvas = new GameObject("MinimapCanvas");
+        Canvas canvas = minimapCanvas.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+
+        // Create the RawImage for displaying the minimap texture.
+        minimapImage = new GameObject("MinimapImage").AddComponent<RawImage>();
+        minimapImage.transform.SetParent(minimapCanvas.transform);
+
+        // Set the size and position of the minimap in the top-right corner.
+        minimapRect = minimapImage.GetComponent<RectTransform>();
+        minimapRect.sizeDelta = new Vector2(MapSize, MapSize);
+        minimapRect.anchorMin = new Vector2(0.85f, 0.85f);
+        minimapRect.anchorMax = new Vector2(0.85f, 0.85f);
+        minimapRect.anchoredPosition = Vector2.zero; // Center it in its position.
+    }
+
+    private void SetupMinimapCamera()
+    {
+        if (minimapCamera == null)
+        {
+            GameObject cameraObj = new GameObject("MinimapCamera");
+            minimapCamera = cameraObj.AddComponent<Camera>();
+            DontDestroyOnLoad(cameraObj);  // Prevent the camera from being destroyed.
+        }
+
+        minimapCamera.orthographic = true;
+        minimapCamera.orthographicSize = 100f; // Adjust based on map size.
+        minimapCamera.transform.position = new Vector3(0, 200, 0); // Top-down view.
+        minimapCamera.transform.rotation = Quaternion.Euler(90, 0, 0);
+
+        minimapRenderTexture = new RenderTexture(256, 256, 16);
+        minimapCamera.targetTexture = minimapRenderTexture;
+
+        minimapImage.texture = minimapRenderTexture;
+    }
+
+    void Update()
+    {
+        if (player == null || playerMarker == null || minimapCamera == null) return;
+
+        Vector2 minimapPos = WorldToMinimap(player.transform.position);
+        UpdateMarkerPosition(playerMarker, minimapPos);
+    }
+}
+
+public class MinimapLogic : MonoBehaviour
+{
+    public RectTransform minimapRect;
+    public Camera minimapCamera;
+    private Dictionary<Vector3, GameObject> chestMarkers = new Dictionary<Vector3, GameObject>();
+    private const float MarkerRadius = 3f;  // Search radius for chests.
+
+    // Store markers by a unique ID or position.
+    private Dictionary<Vector3, GameObject> chestMarkers = new Dictionary<Vector3, GameObject>();
+
+    public GameObject CreateChestMarker(Vector3 chestPosition)
+    {
+        if (!IsChestAtLocation(chestPosition))
+        {
+            Debug.Log("No valid chest found. Marker not created.");
+            return null;  // Exit if no chest is found.
+        }
+
+        // Create a new marker object.
+        GameObject chestMarker = new GameObject("ChestMarker");
+        Image markerImage = chestMarker.AddComponent<Image>();
+        markerImage.color = Color.yellow;
+
+        // Set marker as a child of the minimap and size it.
+        RectTransform markerRect = chestMarker.GetComponent<RectTransform>();
+        markerRect.SetParent(minimapRect);
+        markerRect.sizeDelta = new Vector2(10f, 10f);
+
+        // Convert the world position to minimap coordinates.
+        Vector2 minimapPos = WorldToMinimap(chestPosition);
+        markerRect.anchoredPosition = minimapPos;
+
+        // Store the marker in the dictionary.
+        chestMarkers[chestPosition] = chestMarker;
+
+        return chestMarker;
+    }
+
+    private bool IsChestAtLocation(Vector3 position)
+    {
+        // Search for interactable objects within the given radius.
+        List<PurchaseInteraction> interactables = new List<PurchaseInteraction>();
+
+        foreach (PurchaseInteraction interactable in FindObjectsOfType<PurchaseInteraction>())
+        {
+            if (interactable != null && interactable.available)
+            {
+                float distance = Vector3.Distance(interactable.transform.position, position);
+                if (distance <= MarkerRadius)
+                {
+                    Debug.Log("Valid chest found.");
+                    return true;  // Chest found within radius.
+                }
+            }
+        }
+        Debug.Log("No chest found at the given position.");
+        return false;  // No valid chest found.
+    }
+
+    public void RemoveChestMarker(Vector3 chestPosition)
+    {
+        if (chestMarkers.TryGetValue(chestPosition, out GameObject marker))
+        {
+            Destroy(marker);  // Remove marker from the game.
+            chestMarkers.Remove(chestPosition);  // Remove it from the dictionary.
+        }
+    }
+
+    private Vector2 WorldToMinimap(Vector3 worldPos)
+    {
+        Vector3 screenPos = minimapCamera.WorldToViewportPoint(worldPos);
+        float x = Mathf.Clamp01(screenPos.x) * minimapRect.sizeDelta.x;
+        float y = Mathf.Clamp01(screenPos.y) * minimapRect.sizeDelta.y;
+        return new Vector2(x, y);
+    }
+}
