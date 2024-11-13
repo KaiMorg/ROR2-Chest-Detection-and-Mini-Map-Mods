@@ -1,122 +1,161 @@
 using UnityEngine;
 using System.Collections.Generic;
-using System.Drawing;  // For image processing
-using System.IO;       // For model loading
 using OpenCvSharp;     // For using YOLO and image processing (requires OpenCvSharp library)
+using myGameNameSpace;         // Import for minimap functionalities
 
-public class ObjectDetectionMod : MonoBehaviour
+namespace myGameNameSpace
 {
-    private MinimapController minimapController;
-    private Dictionary<Vector3, bool> detectedChests = new Dictionary<Vector3, bool>();
-
-    private float scanInterval = 0.5f;
-    private float scanTimer = 0f;
-    
-    // YOLO-related variables
-    private Net yoloNet;
-    private const string yoloConfig = "yolov3.cfg";     // Path to YOLO configuration file
-    private const string yoloWeights = "yolov3.weights"; // Path to YOLO weights
-
-    void Start()
+    // ObjectDetectionMod handles the detection and marking of chests on the minimap
+    public class ObjectDetectionMod : MonoBehaviour
     {
-        minimapController = FindObjectOfType<MinimapController>();
-        LoadYOLOModel();
-    }
+        // Dictionary to track detected chests and prevent duplicate markings
+        private Dictionary<Vector3, bool> detectedChests = new Dictionary<Vector3, bool>();
 
-    void Update()
-    {
-        scanTimer += Time.deltaTime;
+        // Interval for scanning for chests in seconds
+        private float scanInterval = 0.5f;
+        private float scanTimer = 0f;
+
+        // YOLO model-related variables
+        private Net yoloNet;
+        private const string yoloConfig = "yolov3.cfg";     // Configuration file for YOLO
+        private const string yoloWeights = "yolov3.weights"; // Pre-trained weights file for YOLO
+
         
-        if (scanTimer >= scanInterval)
+
+        // Start is called before the first frame update
+        void Start()
         {
-            scanTimer = 0f;
-            DetectObjects();
+            // Locate and assign the MinimapController instance in the scene
+            minimapController = FindObjectOfType<MinimapController>();      // Switch this to work in tandem with minimap.cs
+
+            // Load the YOLO model for object detection
+            LoadYOLOModel();
         }
-        
-        UpdateMarkers();
-    }
 
-    private void LoadYOLOModel()
-    {
-        yoloNet = CvDnn.ReadNetFromDarknet(yoloConfig, yoloWeights);
-        yoloNet.SetPreferableBackend(Net.Backend.OPENCV);
-        yoloNet.SetPreferableTarget(Net.Target.CPU); // Use CPU to maintain performance
-        
-        Debug.Log("YOLO model loaded for object detection.");
-    }
-
-    private void DetectObjects()
-    {
-        using (var frame = CaptureScreen())
+        // Update is called once per frame
+        void Update()
         {
-            var inputBlob = CvDnn.BlobFromImage(frame, 1 / 255.0, new Size(416, 416), new Scalar(), true, false);
-            yoloNet.SetInput(inputBlob);
-            
-            var detections = yoloNet.Forward();
-            ProcessDetections(detections, frame.Size());
-        }
-    }
+            // Increment the timer by the time elapsed since the last frame
+            scanTimer += Time.deltaTime;
 
-    // Capture screen and convert to OpenCV Mat for processing
-    private Mat CaptureScreen()
-    {
-        Texture2D screenTexture = ScreenCapture.CaptureScreenshotAsTexture();
-        byte[] imageData = screenTexture.EncodeToPNG();
-        Destroy(screenTexture);
-        
-        return Cv2.ImDecode(imageData, ImreadModes.Color);
-    }
-
-    private void ProcessDetections(Mat detections, Size frameSize)
-    {
-        for (int i = 0; i < detections.Rows; i++)
-        {
-            float confidence = detections.At<float>(i, 4);
-            if (confidence > 0.5) // Set confidence threshold
+            // Perform object detection if the scan interval has elapsed
+            if (scanTimer >= scanInterval)
             {
-                // Extract bounding box coordinates and scale them to the game world
-                float x = detections.At<float>(i, 0) * frameSize.Width;
-                float y = detections.At<float>(i, 1) * frameSize.Height;
-                Vector3 chestPosition = new Vector3(x, 0, y); // Convert to game world coordinates
+                scanTimer = 0f;       // Reset timer
+                DetectObjects();       // Detect objects in the frame
+                UpdateMarkers();       // Update minimap markers
+            }
+        }
 
-                if (!detectedChests.ContainsKey(chestPosition) && VerifyChestInGameFiles(chestPosition))
+        // Load the YOLO model using the configuration and weights files
+        private void LoadYOLOModel()
+        {
+            yoloNet = CvDnn.ReadNetFromDarknet(yoloConfig, yoloWeights);
+            yoloNet.SetPreferableBackend(Net.Backend.OPENCV); // Set OpenCV as the backend
+            yoloNet.SetPreferableTarget(Net.Target.CPU);      // Use CPU for inference
+            Debug.Log("YOLO model loaded for object detection.");
+        }
+
+        // Detect objects using YOLO model on the captured frame
+        private void DetectObjects()
+        {
+            using (var frame = CaptureScreen())
+            {
+                // Create a blob from the image to feed into YOLO
+                var inputBlob = CvDnn.BlobFromImage(frame, 1 / 255.0, new Size(416, 416), new Scalar(), true, false);
+                yoloNet.SetInput(inputBlob);
+
+                // Run the YOLO network forward pass to get detections
+                var detections = yoloNet.Forward();
+                ProcessDetections(detections, frame.Size()); // Process the detected objects
+            }
+        }
+
+        // Capture a screenshot of the screen and convert it to an OpenCV Mat
+        private Mat CaptureScreen()
+        {
+            Texture2D screenTexture = ScreenCapture.CaptureScreenshotAsTexture(); // Capture screenshot
+            byte[] imageData = screenTexture.EncodeToPNG();                       // Convert to PNG format
+            Destroy(screenTexture);                                               // Destroy Texture2D to free memory
+
+            return Cv2.ImDecode(imageData, ImreadModes.Color);                    // Decode image data to OpenCV Mat
+        }
+
+        // Process the detections from YOLO to identify chests and place markers
+        private void ProcessDetections(Mat detections, Size frameSize)
+        {
+            // Iterate through each detection to find chests
+            for (int i = 0; i < detections.Rows; i++)
+            {
+                float confidence = detections.At<float>(i, 4); // Confidence score for detection
+
+                if (confidence > 0.8) // Filter out low-confidence detections
                 {
-                    detectedChests[chestPosition] = true;
-                    minimapController.AddMarker(chestPosition);
-                    Debug.Log("Chest detected by YOLO and marker added.");
+                    float x = detections.At<float>(i, 0) * frameSize.Width;
+                    float y = detections.At<float>(i, 1) * frameSize.Height;
+
+                    Vector3 chestPosition = new Vector3(x, 0, y);
+                    
+                    // If the chest isn't already marked, verify it and add to minimap
+                    if (!detectedChests.ContainsKey(chestPosition) && VerifyChestInGameFiles(chestPosition))
+                    {
+                        detectedChests[chestPosition] = true; // Mark as detected
+                        MinimapLogic.CreateChestMarker(chestPosition); // Add to minimap
+                        Debug.Log("Chest detected and marker added.");
+                    }
                 }
             }
         }
-    }
 
-    private bool VerifyChestInGameFiles(Vector3 position)
-    {
-        Debug.Log($"Verifying chest presence at {position}");
-        return true; // Placeholder for actual verification
-    }
-
-    private void UpdateMarkers()
-    {
-        List<Vector3> markersToRemove = new List<Vector3>();
-
-        foreach (var chestPosition in detectedChests.Keys)
+        // Verify if a chest exists in game files at a specific position
+        private bool VerifyChestInGameFiles(Vector3 position)
         {
-            if (IsChestOpened(chestPosition))
+            Debug.Log($"Verifying chest presence at {position}");
+            // Placeholder for verification with actual game data
+            return true;
+        }
+
+        // Update minimap markers by removing those for opened chests
+        private void UpdateMarkers()
+        {
+            List<Vector3> markersToRemove = new List<Vector3>(); // List to track markers for removal
+            
+            // Check each detected chest's status
+            foreach (var chestPosition in detectedChests.Keys)
             {
-                markersToRemove.Add(chestPosition);
-                minimapController.RemoveMarker(chestPosition);
-                Debug.Log("Chest opened, marker removed.");
+                if (IsChestOpened(chestPosition)) // If chest is opened, mark for removal
+                {
+                    markersToRemove.Add(chestPosition);
+                    minimapController.RemoveMarker(chestPosition); // Remove marker from minimap
+                    Debug.Log("Chest opened, marker removed.");
+                }
+            }
+
+            // Remove opened chests from the detected list
+            foreach (var position in markersToRemove)
+            {
+                detectedChests.Remove(position);
             }
         }
 
-        foreach (var position in markersToRemove)
+        // Determine if a chest is opened based on proximity to player
+        private bool IsChestOpened(Vector3 position)
         {
-            detectedChests.Remove(position);
+            // Placeholder logic: Checks if player is within 3 meters of the chest
+            Vector3 playerPosition = GetPlayerPosition(); // Get player position
+            if (Vector3.Distance(playerPosition, position) < 3.0f)
+            {
+                Debug.Log("Chest at " + position + " assumed opened due to proximity.");
+                return true;
+            }
+            return false;
         }
-    }
 
-    private bool IsChestOpened(Vector3 position)
-    {
-        return false; // Placeholder for checking if the chest is opened
+        // Placeholder method to get the player's position in the game world
+        private Vector3 GetPlayerPosition()
+        {
+            // Replace with actual method for retrieving player's position in-game
+            return new Vector3(0, 0, 0);
+        }
     }
 }
